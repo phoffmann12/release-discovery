@@ -110,7 +110,9 @@ def _spotify():
     oauth = _oauth()
     if not oauth.validate_token(oauth.cache_handler.get_cached_token()):
         raise SpotifyOauthError("no cached Spotify token — run `python main.py auth`")
-    return spotipy.Spotify(auth_manager=oauth)
+    # requests_timeout: spotipy defaults to no timeout, so a stalled socket would hang
+    # the whole cycle forever. Bound it like every other HTTP call in this module.
+    return spotipy.Spotify(auth_manager=oauth, requests_timeout=30)
 
 
 def fetch_taste(sp):
@@ -352,7 +354,10 @@ def refresh_taste_if_stale(con):
         return kv_get(con, "taste"), kv_get(con, "similar")
     cached_taste, cached_similar = kv_get(con, "taste"), kv_get(con, "similar") or {}
     try:
+        log("refreshing taste: fetching Spotify library")
         taste = fetch_taste(_spotify())
+        log(f"taste: {len(taste)} artists; querying Last.fm similar "
+            f"(~{len(taste) * 0.25:.0f}s of throttling)")
         similar = high_confidence(fetch_similar(taste), norm_set(taste))
     except SpotifyOauthError:
         _nag_reauth(con)
