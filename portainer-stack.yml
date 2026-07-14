@@ -1,0 +1,22 @@
+# Portainer stack file. Deploy via: Stacks -> Add stack -> Repository
+#   Repository URL:  https://github.com/phoffmann12/release-discovery
+#   Compose path:    portainer-stack.yml
+# Add SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET / LASTFM_API_KEY / NTFY_TOPIC
+# under the stack's "Environment variables" section.
+# One-time Spotify login: run `python main.py auth` from the container console
+# (see README -> "Deploy on Portainer").
+services:
+  notifier:
+    build: .
+    environment:
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
+      LASTFM_API_KEY: ${LASTFM_API_KEY}
+      NTFY_TOPIC: ${NTFY_TOPIC}
+      # NTFY_URL: http://ntfy:80        # only if you self-host ntfy in this stack
+    volumes:
+      - metal-data:/data               # named volume — survives stack updates
+    restart: unless-stopped
+
+volumes:
+  metal-data:

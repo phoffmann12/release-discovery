@@ -35,33 +35,20 @@ Two things differ from the local flow: secrets go in Portainer's env-var fields
 (not a `.env` file), and the one-time Spotify login is done from Portainer's
 container console.
 
-**1. Get the image built.** Either:
-- *From Git:* push this folder to a repo, then Portainer → **Stacks → Add stack →
-  Repository**, point it at the repo + `docker-compose.yml`. Portainer builds it.
-- *No Git:* on the host, `docker build -t metal-notifier:latest .`, then use the
-  **Web editor** stack below with `image:` instead of `build:`.
+**1. Add the stack from this repo.** Portainer → **Stacks → Add stack →
+Repository**:
+- Repository URL: `https://github.com/phoffmann12/release-discovery`
+- If the repo is **private**, toggle **Authentication** on and enter your GitHub
+  username + a Personal Access Token with read access to the repo.
+- Reference: `refs/heads/main`
+- Compose path: **`portainer-stack.yml`** (not `docker-compose.yml` — that one is
+  for local use and expects a `.env` file). Portainer builds the image from the
+  repo's Dockerfile.
 
-**2. Stack** (Portainer → Stacks → Add stack). Paste this, and add the four
-secrets under the stack's **Environment variables** section:
-
-```yaml
-services:
-  notifier:
-    build: .                        # from Git; OR comment out and use the line below
-    # image: metal-notifier:latest  # if you built it on the host yourself
-    environment:
-      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
-      LASTFM_API_KEY: ${LASTFM_API_KEY}
-      NTFY_TOPIC: ${NTFY_TOPIC}
-      # NTFY_URL: http://ntfy:80    # if you self-host ntfy in the same stack
-    volumes:
-      - metal-data:/data            # named volume — survives updates
-    restart: unless-stopped
-
-volumes:
-  metal-data:
-```
+**2. Environment variables.** In the stack's **Environment variables** section add
+the four required values — `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`,
+`LASTFM_API_KEY`, `NTFY_TOPIC`. (`portainer-stack.yml` reads them via `${...}`;
+no secret lives in the repo.) Then **Deploy the stack**.
 
 **3. One-time Spotify login.** After the stack is up it'll ping your ntfy topic
 "Spotify re-auth needed" (no token yet). In Portainer → **Containers →** the
