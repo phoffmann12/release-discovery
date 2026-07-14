@@ -33,7 +33,7 @@ class Cfg:
         self.db = e("STATE_DB", "/data/state.db")
         self.scan_interval = float(e("SCAN_INTERVAL_HOURS", "6"))
         self.ttl = float(e("TASTE_TTL_HOURS", "24"))
-        self.lookback = int(e("MA_LOOKBACK_DAYS", "14"))
+        self.lookback = int(e("MA_LOOKBACK_DAYS", "0"))
         self.lead_days = int(e("NOTIFY_LEAD_DAYS", "7"))
         self.score_min = float(e("SIMILAR_SCORE_MIN", "0.6"))
         self.consensus = int(e("SIMILAR_CONSENSUS", "2"))
@@ -223,10 +223,10 @@ def parse_row(row):
 
 
 def scan_releases():
-    # Bound the feed on both ends: from_date catches just-dropped/backdated entries,
-    # to_date caps how early we hear about a release (NOTIFY_LEAD_DAYS, default 7).
-    # MA filters server-side, so far-future releases simply aren't returned until
-    # they come within the lead window (verified the endpoint honors toDate).
+    # Window = [today - MA_LOOKBACK_DAYS, today + NOTIFY_LEAD_DAYS]. Default is
+    # [today, today+7]: only releases dropping within the next week. MA_LOOKBACK_DAYS
+    # (default 0) can be raised for a downtime safety margin. MA filters server-side,
+    # so far-future releases aren't returned until they enter the window (verified).
     today = datetime.date.today()
     from_date = (today - datetime.timedelta(days=CFG.lookback)).isoformat()
     to_date = (today + datetime.timedelta(days=CFG.lead_days)).isoformat()
