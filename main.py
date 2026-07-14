@@ -34,6 +34,7 @@ class Cfg:
         self.scan_interval = float(e("SCAN_INTERVAL_HOURS", "6"))
         self.ttl = float(e("TASTE_TTL_HOURS", "24"))
         self.lookback = int(e("MA_LOOKBACK_DAYS", "14"))
+        self.lead_days = int(e("NOTIFY_LEAD_DAYS", "7"))
         self.score_min = float(e("SIMILAR_SCORE_MIN", "0.6"))
         self.consensus = int(e("SIMILAR_CONSENSUS", "2"))
         self.similar_limit = int(e("SIMILAR_LIMIT", "50"))
@@ -222,12 +223,18 @@ def parse_row(row):
 
 
 def scan_releases():
-    from_date = (datetime.date.today() - datetime.timedelta(days=CFG.lookback)).isoformat()
+    # Bound the feed on both ends: from_date catches just-dropped/backdated entries,
+    # to_date caps how early we hear about a release (NOTIFY_LEAD_DAYS, default 7).
+    # MA filters server-side, so far-future releases simply aren't returned until
+    # they come within the lead window (verified the endpoint honors toDate).
+    today = datetime.date.today()
+    from_date = (today - datetime.timedelta(days=CFG.lookback)).isoformat()
+    to_date = (today + datetime.timedelta(days=CFG.lead_days)).isoformat()
     releases, start, saw_rows = [], 0, False
     while True:
         j = ma_get("https://www.metal-archives.com/release/ajax-upcoming/json/1", {
             "sEcho": 1, "iDisplayStart": start, "iDisplayLength": 100,
-            "fromDate": from_date, "toDate": "0000-00-00"}).json()
+            "fromDate": from_date, "toDate": to_date}).json()
         rows = j.get("aaData", [])
         saw_rows = saw_rows or bool(rows)
         releases += [r for r in (parse_row(x) for x in rows) if r]

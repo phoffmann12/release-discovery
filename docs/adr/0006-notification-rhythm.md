@@ -11,8 +11,14 @@ Decide when and how matched Releases reach the user.
   politeness budget (ADR-0003), and MA's feed changes at most daily.
 - Notify **immediately** on each newly-seen match: **one ntfy push per Release**,
   tagged known-artist or discovery.
-- A Release is "new" the first time a scan sees it (past- or future-dated); the
-  Seen set guarantees it is pushed exactly once.
+- **Lead window:** only releases dropping within **`NOTIFY_LEAD_DAYS` (default 7)**
+  of today are announced — the feed is bounded with `toDate = today + lead` (MA
+  filters server-side; verified). A far-future release stays silent until it is
+  ≤1 week out. Lower bound is `MA_LOOKBACK_DAYS` (default 14), catching
+  just-dropped and backdated entries.
+- A Release is "new" the first time a scan sees it *within that window*; the Seen
+  set guarantees it is pushed exactly once. Future releases enter the window as
+  their date approaches and are notified then.
 
 ## Consequences
 - Busy days produce several separate pings. Accepted (user chose per-match over a
