@@ -68,6 +68,10 @@ silently and you're live. Same console command handles the ~6-monthly re-auth.
 > your Spotify app and match `SPOTIFY_REDIRECT_URI` (the default). Nothing actually
 > listens on that port — you're only harvesting the code from the URL.
 
+**Prefer the API?** [`deploy-portainer.sh`](deploy-portainer.sh) does steps 1–2
+over the Portainer API instead of the UI (needs `curl` + `jq`; see the env vars
+in its header). The one-time Spotify login (step 3) is still manual.
+
 ## Notes
 
 - **Spotify re-auth ~every 6 months.** Spotify expires refresh tokens; when that
