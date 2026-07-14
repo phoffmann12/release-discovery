@@ -25,7 +25,7 @@ class Cfg:
         e = os.environ.get
         self.spotify_id = e("SPOTIFY_CLIENT_ID", "")
         self.spotify_secret = e("SPOTIFY_CLIENT_SECRET", "")
-        self.spotify_redirect = e("SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback")
+        self.spotify_redirect = e("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
         self.spotify_cache = e("SPOTIFY_CACHE", "/data/.spotify-token")
         self.lastfm_key = e("LASTFM_API_KEY", "")
         self.ntfy_url = e("NTFY_URL", "https://ntfy.sh").rstrip("/")
@@ -101,7 +101,16 @@ def cmd_auth():
 
 
 def _spotify():
-    return spotipy.Spotify(auth_manager=_oauth())
+    # A headless service must never fall into spotipy's interactive prompt: with no
+    # cached token, SpotifyOAuth(open_browser=False) prints the auth URL and blocks on
+    # input(), which EOFErrors in a detached container. Pre-validate the cached token
+    # (validate_token refreshes it in-place if it's merely expired) and raise
+    # SpotifyOauthError when nothing usable is cached, so refresh_taste_if_stale nags
+    # for re-auth and rides on cached taste instead of crash-looping.
+    oauth = _oauth()
+    if not oauth.validate_token(oauth.cache_handler.get_cached_token()):
+        raise SpotifyOauthError("no cached Spotify token — run `python main.py auth`")
+    return spotipy.Spotify(auth_manager=oauth)
 
 
 def fetch_taste(sp):
@@ -347,7 +356,7 @@ def refresh_taste_if_stale(con):
         similar = high_confidence(fetch_similar(taste), norm_set(taste))
     except SpotifyOauthError:
         _nag_reauth(con)
-        log("spotify auth expired; continuing on cached taste")
+        log("spotify token missing or expired; continuing on cached taste")
         return cached_taste or [], cached_similar
     except Exception as ex:
         # review #5: a transient Spotify/Last.fm failure shouldn't black out the MA

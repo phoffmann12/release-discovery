@@ -13,6 +13,10 @@ services:
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
       LASTFM_API_KEY: ${LASTFM_API_KEY}
       NTFY_TOPIC: ${NTFY_TOPIC}
+      # Loopback IP, not 'localhost' — Spotify is deprecating localhost redirect URIs.
+      # Must match the redirect URI registered in your Spotify app. Override in the
+      # stack's env-var section if you registered a different one.
+      SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8888/callback}
       # NTFY_URL: http://ntfy:80        # only if you self-host ntfy in this stack
     volumes:
       - metal-data:/data               # named volume — survives stack updates

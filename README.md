@@ -10,7 +10,7 @@ Design + decisions: [`CONTEXT.md`](CONTEXT.md) (glossary) and
 ## What you need first
 
 1. **Spotify app** — <https://developer.spotify.com/dashboard> → *Create app*.
-   Add redirect URI `http://localhost:8888/callback`. Copy the Client ID + Secret.
+   Add redirect URI `http://127.0.0.1:8888/callback`. Copy the Client ID + Secret.
 2. **Last.fm API key** (free) — <https://www.last.fm/api/account/create>.
 3. **ntfy** — install the app (iOS/Android/web), pick an unguessable topic name,
    and subscribe to it. That topic string is your `NTFY_TOPIC`.
@@ -58,13 +58,13 @@ notifier → **Console** → connect with `/bin/sh`, then:
 python main.py auth
 ```
 
-Open the printed URL, approve, and copy the FULL `localhost:8888/callback?...`
+Open the printed URL, approve, and copy the FULL `127.0.0.1:8888/callback?...`
 URL your browser lands on (it won't load — that's fine, you only need the URL) and
 paste it back. The token is written to the `metal-data` volume. **Recreate/restart
 the container** so it picks the token up immediately; the first scan then seeds
 silently and you're live. Same console command handles the ~6-monthly re-auth.
 
-> The `http://localhost:8888/callback` redirect URI just has to be registered in
+> The `http://127.0.0.1:8888/callback` redirect URI just has to be registered in
 > your Spotify app and match `SPOTIFY_REDIRECT_URI` (the default). Nothing actually
 > listens on that port — you're only harvesting the code from the URL.
 
