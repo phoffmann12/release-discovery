@@ -375,6 +375,7 @@ def refresh_taste_if_stale(con):
 
 
 def cycle(con):
+    log("cycle start")
     taste, similar = refresh_taste_if_stale(con)
     taste_norm = norm_set(taste)
     releases = scan_releases()
