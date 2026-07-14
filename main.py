@@ -145,13 +145,30 @@ def fetch_taste(sp):
 
 
 # ------------------------------------------------------------------- lastfm
+class _LastfmTransient(Exception):
+    """A Last.fm response worth retrying rather than aborting the whole refresh on."""
+
+
 def _lastfm_similar(artist):
     r = SESSION.get("https://ws.audioscrobbler.com/2.0/", timeout=30, params={
         "method": "artist.getsimilar", "artist": artist, "api_key": CFG.lastfm_key,
         "format": "json", "limit": CFG.similar_limit, "autocorrect": 1})
     r.raise_for_status()
+    try:
+        data = r.json()
+    except ValueError:
+        # Last.fm intermittently answers 200 with an empty/non-JSON body (rate
+        # pressure or a transient hiccup). Retrying beats killing a refresh that's
+        # already made thousands of calls — one bad body must not black out the cycle.
+        raise _LastfmTransient(f"non-JSON body ({len(r.content)} bytes)")
+    if isinstance(data, dict) and data.get("error"):
+        # Documented error envelope, e.g. {"error": 29, "message": "Rate Limit Exceeded"}.
+        raise _LastfmTransient(f"api error {data['error']}: {data.get('message', '')}")
+    sim = data.get("similarartists", {}).get("artist", [])
+    if isinstance(sim, dict):  # Last.fm returns a bare object (not a list) for a single hit
+        sim = [sim]
     out = []
-    for a in r.json().get("similarartists", {}).get("artist", []):
+    for a in sim:
         try:
             match = float(a.get("match") or 0)
         except (TypeError, ValueError):
@@ -160,10 +177,30 @@ def _lastfm_similar(artist):
     return out
 
 
+def _lastfm_similar_retry(artist, attempts=4):
+    delay = 1.0
+    for i in range(attempts):
+        try:
+            return _lastfm_similar(artist)
+        except (_LastfmTransient, requests.RequestException):
+            if i == attempts - 1:
+                raise
+            time.sleep(delay)  # back off; helps most when Last.fm is rate-limiting us
+            delay *= 2
+
+
 def fetch_similar(taste_names):
-    cand = {}
+    cand, failed = {}, 0
     for artist in taste_names:
-        for name, match in _lastfm_similar(artist):
+        try:
+            pairs = _lastfm_similar_retry(artist)
+        except Exception:
+            # One artist that still fails after retries is skipped, not fatal: a partial
+            # Similar set is far better than falling all the way back to (often empty)
+            # cached taste and aborting the cycle.
+            failed += 1
+            continue
+        for name, match in pairs:
             nn = normalize(name)
             if not nn:
                 continue
@@ -171,6 +208,8 @@ def fetch_similar(taste_names):
             e["sources"].add(artist)
             e["score"] = max(e["score"], match)
         time.sleep(0.25)  # ponytail: gentle on Last.fm; drop if it's ever slow
+    if failed:
+        log(f"Last.fm: {failed}/{len(taste_names)} artists skipped after retries")
     return cand
 
 
@@ -366,9 +405,10 @@ def refresh_taste_if_stale(con):
     except Exception as ex:
         # review #5: a transient Spotify/Last.fm failure shouldn't black out the MA
         # scan for a whole cycle — fall back to cached taste when we have it.
-        log(f"taste refresh failed ({type(ex).__name__}: {ex}); using cached taste")
         if cached_taste is not None:
+            log(f"taste refresh failed ({type(ex).__name__}: {ex}); using cached taste")
             return cached_taste, cached_similar
+        log(f"taste refresh failed ({type(ex).__name__}: {ex}); no cached taste — aborting cycle")
         raise
     kv_set(con, "taste", taste)
     kv_set(con, "similar", similar)
