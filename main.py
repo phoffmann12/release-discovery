@@ -2,7 +2,8 @@
 """Metal-release notifier. See CONTEXT.md + docs/adr/ for the design.
 
 Pipeline: Spotify taste -> Last.fm similar (high-confidence) -> scan Metal
-Archives -> normalized-name match -> ntfy push, one per new release.
+Archives -> normalized-name match -> ntfy push, one per new release. The same
+taste/similar sets also drive an opt-in concert scan of Eventim (ADR-0008).
 
 Commands:
   python main.py run       # loop forever (default; container entrypoint)
@@ -38,6 +39,14 @@ class Cfg:
         self.score_min = float(e("SIMILAR_SCORE_MIN", "0.6"))
         self.consensus = int(e("SIMILAR_CONSENSUS", "2"))
         self.similar_limit = int(e("SIMILAR_LIMIT", "50"))
+        # Concerts (ADR-0008, opt-in). Eventim's geo filter is city-based, not a radius,
+        # so "near me" is a list of cities. Empty CONCERT_CITIES disables the feature.
+        self.concert_cities = [c.strip() for c in e("CONCERT_CITIES", "").split(",") if c.strip()]
+        self.concert_lookahead = int(e("CONCERT_LOOKAHEAD_DAYS", "180"))
+        self.concert_max_pages = int(e("CONCERT_MAX_PAGES", "120"))
+        self.eventim_webid = e("EVENTIM_WEB_ID", "web__eventim-de")
+        self.eventim_lang = e("EVENTIM_LANGUAGE", "de")
+        self.eventim_category = e("EVENTIM_CATEGORY", "Konzerte")
         self.user_agent = e("USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) "
                             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
@@ -48,6 +57,10 @@ SESSION.headers.update({"User-Agent": CFG.user_agent})
 # ADR-0003: Metal Archives is Cloudflare-fronted and 403s plain requests even
 # with a browser UA (verified). curl_cffi impersonates Chrome's TLS fingerprint.
 MA_SESSION = cffi_requests.Session(impersonate="chrome")
+# ADR-0008: Eventim's public search API is what eventim.de's frontend calls; a plain
+# requests UA risks blocking, so ride the same Chrome TLS impersonation as MA. Separate
+# session to keep cookies/throttle independent of the MA scrape.
+EVENTIM_SESSION = cffi_requests.Session(impersonate="chrome")
 
 
 def _redact(s):
@@ -317,6 +330,126 @@ def match(releases, taste_norm, similar):
     return known, disc
 
 
+# --------------------------------------------------------- eventim concert scan
+# ADR-0008. Eventim mirrors the MA scan: pull the local concert feed (bounded by
+# CONCERT_CITIES + a date window), then name-match performers against the same taste
+# and similar sets. The API filters by city (no working radius); every performer is in
+# attractions[], which is what we match — tribute acts ("SaD - Metallica Tribute")
+# normalize to a distinct string and so never false-match a real band.
+EVENTIM_URL = "https://public-api.eventim.com/websearch/search/api/exploration/v1/products"
+_last_eventim = [0.0]
+
+
+def eventim_get(params):
+    # ~1 req/s throttle, same courtesy as the MA scrape.
+    gap = time.monotonic() - _last_eventim[0]
+    if gap < 1.0:
+        time.sleep(1.0 - gap)
+    r = EVENTIM_SESSION.get(EVENTIM_URL, params=params, timeout=30)
+    _last_eventim[0] = time.monotonic()
+    r.raise_for_status()
+    return r
+
+
+def parse_event(prod):
+    # Pull the fields we notify on. attractions[].name are the performers (match keys);
+    # `name` is the event title (display fallback when attractions is empty).
+    try:
+        le = (prod.get("typeAttributes") or {}).get("liveEntertainment") or {}
+        loc = le.get("location") or {}
+        acts = [html.unescape((a.get("name") or "")).strip()
+                for a in (prod.get("attractions") or []) if a.get("name")]
+        acts = [a for a in acts if a]
+        pid = str(prod.get("productId") or "")
+        url = prod.get("link") or ""
+        if not pid or not url:
+            return None
+        city = (loc.get("city") or "").strip()
+        date = (le.get("startDate") or "")[:10]  # YYYY-MM-DD
+        # Identity is the SHOW, not the ticket product: Eventim sells one gig as several
+        # productIds (GA / VIP / lineup variants), so dedup/seen key on date+city+headliner,
+        # not productId — otherwise one concert fires N near-identical pushes. Normalized so
+        # minor string drift doesn't resurrect a show. Falls back to productId when there's
+        # no performer to key on (those never match a taste anyway). "eventim:" namespaces it
+        # so a concert id never collides with a release URL in the shared `seen` table.
+        primary = normalize(acts[0]) if acts else normalize(prod.get("name") or "")
+        key = f"{date}|{normalize(city)}|{primary}" if primary else f"pid|{pid}"
+        return {
+            "id": "eventim:" + key,
+            "acts": acts,
+            "title": (prod.get("name") or "").strip(),
+            "city": city,
+            "venue": (loc.get("name") or "").strip(),
+            "date": date,
+            "url": url,
+        }
+    except Exception:
+        return None
+
+
+def scan_concerts():
+    # Window = [today, today + CONCERT_LOOKAHEAD_DAYS] across CONCERT_CITIES (union).
+    # Returns [] when disabled (no cities configured).
+    #
+    # Pagination is by DATE CURSOR, not page number: Eventim's `page` param is a verified
+    # no-op (every page returns the same first 50) and `top` caps at 50. So we sort DateAsc
+    # and advance `date_from` to the last date of each batch. Boundary-date events reappear
+    # across batches; dedup by id absorbs the overlap.
+    if not CFG.concert_cities:
+        return []
+    today = datetime.date.today()
+    to_date = (today + datetime.timedelta(days=CFG.concert_lookahead)).isoformat()
+    cities = ",".join(CFG.concert_cities)
+    cursor, saw_rows = today.isoformat(), False
+    by_id = {}
+    for _ in range(CFG.concert_max_pages):
+        j = eventim_get({
+            "webId": CFG.eventim_webid, "language": CFG.eventim_lang,
+            "page": 1, "top": 50, "sort": "DateAsc",             # 50 is the API's hard ceiling
+            "categories": CFG.eventim_category, "city_names": cities,
+            "date_from": cursor, "date_to": to_date}).json()
+        prods = j.get("products", [])
+        saw_rows = saw_rows or bool(prods)
+        parsed = [e for e in (parse_event(p) for p in prods) if e]
+        for e in parsed:
+            prev = by_id.get(e["id"])
+            if prev is None or len(e["acts"]) > len(prev["acts"]):
+                by_id[e["id"]] = e   # collapse ticket-product variants; keep the fullest lineup
+        if len(prods) < 50:
+            break                                                # short batch => window exhausted
+        dates = sorted(e["date"] for e in parsed if e["date"])
+        last = dates[-1] if dates else ""
+        if not last or last <= cursor:
+            # A full batch all on one day (>50 shows) can't advance the cursor; step past it.
+            # Truncates same-day shows beyond 50 — implausible for a normal city list, but log it.
+            log(f"concerts: >50 shows dated {cursor}; some same-day shows may be skipped")
+            cursor = (datetime.date.fromisoformat(cursor) + datetime.timedelta(days=1)).isoformat()
+        else:
+            cursor = last
+        if cursor > to_date:
+            break
+    else:
+        log(f"concerts: hit request cap ({CFG.concert_max_pages}); farthest-future shows skipped")
+    # Mirror the MA guard: rows came back but nothing parsed => Eventim changed its shape.
+    if saw_rows and not by_id:
+        raise RuntimeError("Eventim returned products but none parsed — API shape changed?")
+    return sorted(by_id.values(), key=lambda e: e["date"])
+
+
+def match_concerts(events, taste_norm, similar):
+    # Same known/discovery split as releases, keyed on performer names.
+    known, disc = [], []
+    for ev in events:
+        norms = [n for n in (normalize(a) for a in ev.get("acts", [])) if n]
+        if any(n in taste_norm for n in norms):
+            known.append(ev)
+        else:
+            hit = next((n for n in norms if n in similar), None)
+            if hit:
+                disc.append(dict(ev, sources=similar[hit]["sources"]))
+    return known, disc
+
+
 # --------------------------------------------------------------------- state
 def db():
     con = sqlite3.connect(CFG.db)
@@ -373,6 +506,16 @@ def _meta(r):
     return " · ".join(p for p in (r["type"], r["genre"], r["date"]) if p)
 
 
+def _concert_title(e):
+    return f"{e['acts'][0] if e['acts'] else e['title']} live in {e['city']}"
+
+
+def _concert_body(e):
+    acts = ", ".join(e["acts"]) if e.get("acts") else e.get("title", "")
+    where = " · ".join(p for p in (e.get("venue", ""), e.get("city", "")) if p)
+    return " · ".join(p for p in (acts, where, e.get("date", "")) if p)
+
+
 # --------------------------------------------------------------------- cycle
 def _nag_reauth(con):
     # review #7: fire the re-auth nag once, not every 6h. Cleared on the next
@@ -419,6 +562,53 @@ def refresh_taste_if_stale(con):
     return taste, similar
 
 
+def run_concerts(con, taste_norm, similar):
+    # Opt-in supplement to the release scan (ADR-0008). Self-contained: never raises,
+    # so a flaky reverse-engineered API can't abort the (already-notified) release cycle
+    # or leave release `seen` marks uncommitted. Failures alert once, deduped like the
+    # main error path. Runs only when CONCERT_CITIES is set.
+    if not CFG.concert_cities:
+        return
+    try:
+        events = scan_concerts()
+    except Exception as ex:
+        msg = f"{type(ex).__name__}: {ex}"
+        log(f"concert scan failed: {_redact(msg)}")
+        if kv_get(con, "concert_last_error") != msg:
+            notify("Concert scan error", _redact(msg)[:300], tags=["warning"])
+            kv_set(con, "concert_last_error", msg)
+            con.commit()
+        return
+    kv_set(con, "concert_last_error", "")
+    known, disc = match_concerts(events, taste_norm, similar)
+    new_known = [e for e in known if not seen_has(con, e["id"])]
+    new_disc = [e for e in disc if not seen_has(con, e["id"])]
+
+    if kv_get(con, "concerts_initialized") is None:
+        # Separate seed gate from the release `initialized` flag: enabling concerts on an
+        # existing install must seed silently once, not flood the whole lookback window.
+        for e in known + disc:
+            mark_seen(con, e["id"])
+        kv_set(con, "concerts_initialized", True)
+        notify("Concert tracking on",
+               f"Watching {len(CFG.concert_cities)} cities "
+               f"({', '.join(CFG.concert_cities[:6])}). "
+               f"Seeded {len(new_known) + len(new_disc)} current shows; "
+               f"you'll be pinged on new ones from here on.", tags=["stadium"])
+        log(f"concerts: seeded {len(new_known) + len(new_disc)} shows (no spam)")
+    else:
+        for e in new_known:
+            if notify(_concert_title(e), _concert_body(e), url=e["url"], tags=["stadium"]):
+                mark_seen(con, e["id"])
+        for e in new_disc:
+            body = _concert_body(e) + f"\n🔍 similar to {', '.join(e['sources'][:4])}"
+            if notify(_concert_title(e), body, url=e["url"], tags=["stadium", "mag"]):
+                mark_seen(con, e["id"])
+        log(f"concerts: {len(events)} shows -> {len(new_known)} new known, "
+            f"{len(new_disc)} new discovery")
+    con.commit()
+
+
 def cycle(con):
     log("cycle start")
     taste, similar = refresh_taste_if_stale(con)
@@ -453,6 +643,8 @@ def cycle(con):
                 mark_seen(con, r["url"])
         log(f"scan: {len(releases)} releases -> {len(new_known)} new known, "
             f"{len(new_disc)} new discovery")
+
+    run_concerts(con, taste_norm, similar)
 
     kv_set(con, "last_error", "")
     con.commit()
@@ -519,6 +711,34 @@ def selftest():
     known, disc = match(rels, taste_norm, similar)
     assert [r["url"] for r in known] == ["1", "4"], [r["url"] for r in known]
     assert [r["url"] for r in disc] == ["2"] and disc[0]["sources"] == ["Metallica"]
+
+    # --- concerts (ADR-0008) ---
+    prod = {"productId": 20949496, "name": "72 Seasons Tour",
+            "attractions": [{"name": "Metallica"}, {"name": "Pantera"}],
+            "link": "https://www.eventim.de/event/x-20949496/",
+            "typeAttributes": {"liveEntertainment": {
+                "startDate": "2026-08-01T20:00:00+02:00",
+                "location": {"city": "Dortmund", "name": "Westfalenhallen"}}}}
+    ev = parse_event(prod)
+    assert ev["id"] == "eventim:2026-08-01|dortmund|metallica", ev["id"]
+    assert ev["acts"] == ["Metallica", "Pantera"]
+    assert ev["city"] == "Dortmund" and ev["venue"] == "Westfalenhallen" and ev["date"] == "2026-08-01"
+    assert parse_event({"name": "no id"}) is None          # missing productId/link -> dropped
+    assert _concert_title(ev) == "Metallica live in Dortmund"
+    # Same show sold as two ticket products (different productId, different lineup depth)
+    # must collapse to ONE id, so one gig can't fire multiple pushes.
+    variant = dict(prod, productId=99999999, attractions=[{"name": "Metallica"}])
+    assert parse_event(variant)["id"] == ev["id"], "ticket-product variants must share an id"
+
+    events = [
+        {"id": "a", "acts": ["Metallica"], "city": "X"},                  # known
+        {"id": "b", "acts": ["Slayer"], "city": "Y"},                     # discovery
+        {"id": "c", "acts": ["Nobody"], "city": "Z"},                     # no match
+        {"id": "d", "acts": ["SaD - Metallica Tribute"], "city": "W"},    # tribute -> no false match
+        {"id": "e", "acts": ["Foo", "Metallica"], "city": "V"}]           # 2nd act known
+    ck, cd = match_concerts(events, taste_norm, similar)
+    assert [e["id"] for e in ck] == ["a", "e"], [e["id"] for e in ck]
+    assert [e["id"] for e in cd] == ["b"] and cd[0]["sources"] == ["Metallica"]
     print("selftest OK")
 
 
