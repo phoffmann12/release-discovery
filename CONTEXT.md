@@ -20,6 +20,14 @@ code, ADRs, and notifications. Don't drift to synonyms.
 - **Discovery match** — a Release whose band is a **high-confidence** Similar
   artist not itself in the Taste set: similar to ≥2 taste artists (consensus) or
   match score ≥0.6. Serves the "find me new bands" goal without flooding.
-- **Notification** — an ntfy push (ADR-0005) announcing matched Release(s),
-  tagged known-artist or discovery.
-- **Seen set** — Releases already notified, so we never notify the same one twice.
+- **Notification** — an ntfy push (ADR-0005) announcing matched Release(s) or
+  Concert(s), tagged known-artist or discovery.
+- **Concert** — an upcoming live event from **Eventim** (ADR-0008) within the
+  user's cities and date window, a candidate for a notification. Matched the same
+  way as a Release: its performers (Eventim `attractions`) are checked against the
+  Taste set (known-artist Concert) and the high-confidence Similar set (discovery
+  Concert). Opt-in via `CONCERT_CITIES`; "near me" is a **list of cities**, because
+  Eventim's geo filter is city-based, not a radius (ADR-0008).
+- **Seen set** — Releases and Concerts already notified, so we never notify the
+  same one twice. A Concert's identity is the show (date + city + headliner), not
+  the ticket product, since Eventim lists one show under several product ids.
