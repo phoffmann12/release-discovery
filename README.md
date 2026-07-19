@@ -2,7 +2,9 @@
 
 Pushes an [ntfy](https://ntfy.sh) notification for new metal releases on
 [Metal Archives](https://www.metal-archives.com/) that match your Spotify taste —
-both bands you already listen to and high-confidence similar bands.
+both bands you already listen to and high-confidence similar bands. Optionally does
+the same for **upcoming concerts** near you, from Eventim (see
+[Concerts](#concerts-optional)).
 
 Design + decisions: [`CONTEXT.md`](CONTEXT.md) (glossary) and
 [`docs/adr/`](docs/adr/) (why each choice was made).
@@ -71,6 +73,31 @@ silently and you're live. Same console command handles the ~6-monthly re-auth.
 **Prefer the API?** [`deploy-portainer.sh`](deploy-portainer.sh) does steps 1–2
 over the Portainer API instead of the UI (needs `curl` + `jq`; see the env vars
 in its header). The one-time Spotify login (step 3) is still manual.
+
+## Concerts (optional)
+
+Turn on concert notifications by setting **`CONCERT_CITIES`** (comma-separated) in
+your `.env` (local) or the stack's env-var section (Portainer). It reuses the same
+taste + similar-band sets: you get a push when one of your bands — or a
+high-confidence similar band — plays one of those cities.
+
+```bash
+CONCERT_CITIES=Bochum,Dortmund,Essen,Oberhausen,Köln
+```
+
+- **"Near me" is a list of cities, not a radius.** Concert data comes from
+  Eventim's public search API, whose location filter is city-based (ADR-0008), and
+  its event coordinates are only city-accurate — so list your city plus the
+  neighbours you'd actually travel to, in **German spelling** (`Köln`, `München`).
+- Leave `CONCERT_CITIES` unset and the feature is **off** — nothing else changes.
+- Enabling it **seeds silently** once (like the release scan): it records the shows
+  currently listed and only pings you about ones that appear afterwards. You get one
+  "Concert tracking on" confirmation.
+- Tune with `CONCERT_LOOKAHEAD_DAYS` (default 180). Outside Germany, point
+  `EVENTIM_WEB_ID` at another storefront (`web__eventim-at`, `web__eventim-ch`) —
+  though coverage is best in DE. See `.env.example` for all knobs.
+- Eventim's API is undocumented/reverse-engineered, so it can break if they change
+  it; a scan failure alerts once and never blocks the release scan (ADR-0008).
 
 ## Notes
 

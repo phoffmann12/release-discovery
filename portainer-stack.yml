@@ -18,6 +18,10 @@ services:
       # stack's env-var section if you registered a different one.
       SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8888/callback}
       # NTFY_URL: http://ntfy:80        # only if you self-host ntfy in this stack
+      # Concerts (ADR-0008, opt-in): set CONCERT_CITIES in the stack's env-var section
+      # to a comma-separated list of cities to enable. Empty = feature off.
+      CONCERT_CITIES: ${CONCERT_CITIES:-}
+      CONCERT_LOOKAHEAD_DAYS: ${CONCERT_LOOKAHEAD_DAYS:-180}
     volumes:
       - metal-data:/data               # named volume — survives stack updates
     restart: unless-stopped
