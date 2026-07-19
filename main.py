@@ -38,6 +38,11 @@ class Cfg:
         self.lead_days = int(e("NOTIFY_LEAD_DAYS", "7"))
         self.score_min = float(e("SIMILAR_SCORE_MIN", "0.6"))
         self.consensus = int(e("SIMILAR_CONSENSUS", "2"))
+        # Consensus alone (co-occurring in >=N similar-lists) let list-tail noise qualify:
+        # with a 2.4k-artist taste set, bands appearing at score ~0.05 in two lists inflated
+        # discovery to ~5x the taste set (ADR-0002). Require the consensus path to also clear
+        # this modest score floor. Set to 0 to restore the old score-free consensus (legacy OR).
+        self.consensus_score_min = float(e("SIMILAR_CONSENSUS_SCORE_MIN", "0.3"))
         self.similar_limit = int(e("SIMILAR_LIMIT", "50"))
         # Concerts (ADR-0008, opt-in). Eventim's geo filter is city-based, not a radius,
         # so "near me" is a list of cities. Empty CONCERT_CITIES disables the feature.
@@ -227,12 +232,20 @@ def fetch_similar(taste_names):
 
 
 def high_confidence(cand, taste_norm):
-    """ADR-0002: keep a similar artist iff consensus≥N or match≥threshold, and not already taste."""
+    """ADR-0002: keep a similar artist iff it's strongly similar to one taste artist
+    (score≥SIMILAR_SCORE_MIN) OR moderately similar to several (consensus≥N AND
+    score≥SIMILAR_CONSENSUS_SCORE_MIN) — and not already taste. The consensus score
+    floor stops mere list-tail co-occurrence from qualifying a band; without it a large
+    taste set inflates discovery to ~5x its size (13k+ from 2.4k artists). e["score"] is
+    the max match across sources, so the floor asks "similar to at least one of them for
+    real", not just "appeared near the bottom of two lists"."""
     out = {}
     for nn, e in cand.items():
         if nn in taste_norm:
             continue
-        if len(e["sources"]) >= CFG.consensus or e["score"] >= CFG.score_min:
+        strong = e["score"] >= CFG.score_min
+        consensus = len(e["sources"]) >= CFG.consensus and e["score"] >= CFG.consensus_score_min
+        if strong or consensus:
             out[nn] = {"name": e["name"], "sources": sorted(e["sources"])}
     return out
 
@@ -692,9 +705,10 @@ def selftest():
     assert sp["bands"] == ["Aaa", "Bbb"] and sp["band"] == "Aaa / Bbb", sp
 
     cand = {
-        "a": {"name": "A", "sources": {"x"}, "score": 0.7},           # score -> in
-        "b": {"name": "B", "sources": {"x"}, "score": 0.3},           # weak    -> out
-        "c": {"name": "C", "sources": {"x", "y"}, "score": 0.3},      # consensus -> in
+        "a": {"name": "A", "sources": {"x"}, "score": 0.7},           # strong score -> in
+        "b": {"name": "B", "sources": {"x"}, "score": 0.3},           # 1 src, weak score -> out
+        "c": {"name": "C", "sources": {"x", "y"}, "score": 0.4},      # consensus + >=floor -> in
+        "d": {"name": "D", "sources": {"x", "y"}, "score": 0.1},      # consensus but < floor -> out (old OR let this in)
         "known": {"name": "K", "sources": {"x", "y"}, "score": 0.9},  # already taste -> out
     }
     hc = high_confidence(cand, {"known"})

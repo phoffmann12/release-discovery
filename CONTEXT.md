@@ -18,8 +18,10 @@ code, ADRs, and notifications. Don't drift to synonyms.
 - **Known-artist match** — a Release whose band is in the Taste set. Serves the
   "never miss a drop" goal. Fires for *all* release types.
 - **Discovery match** — a Release whose band is a **high-confidence** Similar
-  artist not itself in the Taste set: similar to ≥2 taste artists (consensus) or
-  match score ≥0.6. Serves the "find me new bands" goal without flooding.
+  artist not itself in the Taste set: match score ≥0.6 to any one taste artist, or
+  similar to ≥2 taste artists (consensus) *and* a best match ≥0.3 (the consensus
+  score floor, ADR-0002 — keeps list-tail co-occurrence from flooding discovery).
+  Serves the "find me new bands" goal without flooding.
 - **Notification** — an ntfy push (ADR-0005) announcing matched Release(s) or
   Concert(s), tagged known-artist or discovery.
 - **Concert** — an upcoming live event from **Eventim** (ADR-0008) within the
